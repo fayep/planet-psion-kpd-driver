@@ -35,12 +35,27 @@ earlier reference design and does not reflect production hardware.
 
 | Device | 7-bit address | Confirmed via |
 |--------|--------------|---------------|
-| Cosmo Communicator | `0x5B` | Live `/sys/bus/i2c/devices/4-005b/driver` |
+| Cosmo Communicator | `0x5B` | Live `/sys/bus/i2c/devices/4-005b/driver` + live `/proc/device-tree` (`reg = <0x5b>`) |
 | Astro Slide | `0x5B` | Live DTBO (`aw9523_key@5b`, `reg = <0x5b>`) |
 | Gemini PDA | `0x5B` (presumed) | Not yet confirmed — no live device available |
 
 On Cosmo, the AW9524 backlight chip is also at address `0x5B` but on a different I2C
 bus (bus 3 vs bus 4 for the AW9523).
+
+### Device tree compatible strings
+
+The Android drivers bind via these DT compatible strings (confirmed from live
+`/proc/device-tree` on Cosmo running Gemian kernel 4.4.146):
+
+| Chip | Compatible string |
+|------|-----------------|
+| AW9523B | `mediatek,aw9523_key` |
+| AW9524  | `mediatek,aw9524_key` |
+
+**Important**: the AW9523 and AW9524 DT nodes on Cosmo contain only `compatible`,
+`reg`, and `status` — no `interrupts`, `reset-gpios`, or any other properties.  The
+Android driver hard-codes the SHDN and INT GPIO numbers rather than reading them from
+DT.  The out-of-tree driver must define proper DT bindings for these signals.
 
 ### GPIO assignment
 
@@ -132,6 +147,9 @@ Backlight hardware differs by device:
 For the out-of-tree driver the backlight should be exposed as a standard `leds` class
 device (`kbd_backlight`).
 
+On Cosmo running Gemian, the existing Android AW9524 driver exposes
+`/sys/class/leds/kbd_backlight/` with `max_brightness = 5`.
+
 ---
 
 ## Per-device GPIO assignments
@@ -160,8 +178,10 @@ than plain GPIO mode as on the later devices.
 
 ### Cosmo (MT6771)
 
-GPIO source: `k71v1_64_bsp.dts` (Android kernel source, not yet confirmed from live DTBO).
-I2C bus assignments confirmed live via `/sys/bus/i2c/devices/`.
+GPIO source: `k71v1_64_bsp.dts` (Android kernel source).  I2C bus assignments and DT
+`reg` values confirmed live from Gemian (kernel 4.4.146) via `/sys/bus/i2c/devices/`
+and `/proc/device-tree`.  Note: the DT node does **not** carry GPIO or interrupt
+properties — these are hard-coded in the Android driver.
 
 | Signal | GPIO / bus | Source |
 |--------|-----------|--------|

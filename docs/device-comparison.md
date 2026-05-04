@@ -24,7 +24,7 @@ All repositories are under `https://github.com/planet-community/`.
 
 | Feature | Gemini (MT6797) | Cosmo (MT6771) | Astro (MT6873) |
 |---------|-----------------|----------------|----------------|
-| Kernel version | 3.18 | 4.4.146 | 5.4+ |
+| Kernel version | 3.18 | 4.4.146 | 4.14.186 |
 | AW9523B chip | ✓ | ✓ | ✓ |
 | AW9524 (dedicated LED chip) | ✗ | ✓ | ✗ |
 | Backlight | none | AW9524 + MTK PWM | MTK PWM via AW9523 driver |
@@ -113,6 +113,39 @@ no backlight; the Astro drives backlight via MTK PWM directly from the AW9523 dr
 The out-of-tree driver should register a `leds` class device named `kbd_backlight` on
 devices that have backlight hardware, and expose brightness control through the standard
 `/sys/class/leds/kbd_backlight/brightness` interface.
+
+## Live device observations
+
+### Cosmo running Gemian (kernel 4.4.146, firmware V25)
+
+Observed on Cosmo Communicator booted into Gemian Linux (April 2021 build,
+Android firmware V25) via SSH.
+
+**Input devices registered at boot (`dmesg`):**
+
+| evdev | Name | Driver |
+|-------|------|--------|
+| `input0` | `ACCDET` | Accessory detection |
+| `input1` | `mtk-kpd` | MediaTek KPD block (power/home keys) |
+| `input2` | `cf-keys` | Cover-flip keys |
+| `input3` | `Integrated keyboard` | AW9523B keyboard matrix |
+| `input4` | `mtk-tpd` | Touchpad |
+
+**I2C devices:**
+
+| sysfs path | Chip | Driver |
+|-----------|------|--------|
+| `4-005b` | AW9523B keyboard | `Integrated keyboard` |
+| `3-005b` | AW9524 backlight | `AW9524keyboard` |
+
+**LED class devices:** `kbd_backlight` (max_brightness=5), `lcd-backlight`,
+`mt6370_pmu_bled`, `mt6370_pmu_led3`, `red`, `green`, `blue`.
+
+**DT node structure** (`/proc/device-tree/i2c@11008000/aw9523_key@5b/`):
+properties present: `compatible`, `reg`, `status`, `name`, `phandle` only.
+No `interrupts` or GPIO properties — these are hard-coded in the Android driver.
+
+---
 
 ## Android DTS keypad configuration
 

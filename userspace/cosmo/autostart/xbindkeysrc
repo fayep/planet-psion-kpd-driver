@@ -6,4 +6,4 @@
 # handle this keysym reliably on the Cosmo 4.4 kernel, so we handle it here.
 
 "~/bin/toggle-wifi.sh"
-    XF86RFKill
+    Mod5 + f

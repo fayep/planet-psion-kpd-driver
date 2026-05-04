@@ -1,0 +1,11 @@
+[Unit]
+Description=Planet Computers AW9523B keyboard driver
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo 4-005b > "/sys/bus/i2c/drivers/Integrated keyboard/unbind" && insmod /home/cosmo/planet_kpd/planet_kpd.ko'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

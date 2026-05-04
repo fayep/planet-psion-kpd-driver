@@ -170,9 +170,18 @@ cp userspace/cosmo/autostart/xbindkeys.desktop ~/.config/autostart/
 
 ## Shutdown
 
-**Do not use the physical power button to shut down.** The power button is handled by
-the Android LXC container which performs a hard power-off, bypassing the Linux shutdown
-sequence.  Use `sudo shutdown -h now` or the KDE session menu instead.
+**Use software shutdown** (`sudo shutdown -h now` or the KDE session menu).
+
+With the built-in "Integrated keyboard" driver, holding the power button raises KDE's
+shutdown dialog.  Our module breaks this: unbinding "Integrated keyboard" removes the
+virtual input device that the built-in platform driver uses to forward KEY_POWER to
+logind.  Without it, a long press goes directly to the Android LXC container which
+performs a hard power-off, bypassing the Linux shutdown sequence.
+
+The proper fix is to access the AW9523B via raw I2C (grabbing the adapter directly via
+`i2c_get_adapter(4)` rather than registering an `i2c_driver`), so that "Integrated
+keyboard" stays alive for the power button while our module handles the QWERTY matrix.
+This is planned for a future revision.
 
 ---
 

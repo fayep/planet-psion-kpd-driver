@@ -168,6 +168,14 @@ cp userspace/cosmo/autostart/xbindkeys.desktop ~/.config/autostart/
 
 ---
 
+## Shutdown
+
+**Do not use the physical power button to shut down.** The power button is handled by
+the Android LXC container which performs a hard power-off, bypassing the Linux shutdown
+sequence.  Use `sudo shutdown -h now` or the KDE session menu instead.
+
+---
+
 ## Known limitations (Cosmo / 4.4 kernel)
 
 - **Interrupt mode unavailable**: The built-in aw9523_key driver registers IRQ 31

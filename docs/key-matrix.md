@@ -7,9 +7,11 @@ positions.  The matrix wiring is identical on Gemini, Cosmo, and Astro — the s
 physical keyboard PCB is used across all three devices, with only minor per-device
 firmware differences (see [device-comparison.md](device-comparison.md)).
 
-Rows are driven on **P0[7:0]** (AW9523B port 0, outputs).
-Columns are sensed on **P1[6:0]** (AW9523B port 1, inputs).
+Rows are sensed on **P0[7:0]** (AW9523B port 0, inputs with internal pull-ups).
+Columns are driven on **P1[6:0]** (AW9523B port 1, open-drain outputs).
 P1[7] is unused.
+
+The scan drives each column LOW in turn via P1 and reads which rows are pulled LOW via P0.
 
 ## Matrix map
 

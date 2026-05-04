@@ -18,6 +18,24 @@ Physical QWERTY keys
                       MTK KPD HAL (power/home keys via PMIC)
 ```
 
+### Android vs Linux scope
+
+This repository targets **Gemian Linux** (and any other mainline Linux distribution on these
+devices).  It does **not** apply to Android for the following reasons:
+
+- Android already ships `aw9523_key.c` compiled directly into the kernel image — it is not
+  a loadable module and is bound to the device tree node at boot.
+- Android kernels on these devices typically disable `CONFIG_MODULES`, making `insmod`
+  unavailable.
+- Even where modules are supported, the `mediatek,aw9523_key` compatible string would clash
+  with the built-in driver.
+- The Android input stack processes `input_report_key` events through `InputReader` and
+  `.kl` keylayout files rather than evdev/xkb; different userspace configuration is required.
+
+The out-of-tree module solves the specific problem that Gemian's 4.4 kernel does not carry
+the `aw9523_key` driver as a module and lacks the DT GPIO bindings needed for the original
+interrupt-driven implementation.
+
 ---
 
 ## AW9523B — main keyboard controller
@@ -61,11 +79,18 @@ DT.  The out-of-tree driver must define proper DT bindings for these signals.
 
 | Port | Direction | Function |
 |------|-----------|----------|
-| P0[7:0] | Output (column drive) | 8 keyboard rows (KROW) |
-| P1[6:0] | Input (row sense) | 7 keyboard columns (KCOL) |
+| P0[7:0] | Input (row sense, internal pull-ups) | 8 keyboard rows (KROW) |
+| P1[6:0] | Output (column drive, open-drain) | 7 keyboard columns (KCOL) |
 | P1[7]   | Unused | — |
 
-The driver scans by driving each column low in turn on P0 and reading the row state on P1.
+The driver scans by driving each column LOW in turn on P1 and reading the row state on P0.
+Each unselected column is left Hi-Z (open-drain high); P0 internal pull-ups keep idle rows HIGH.
+
+**Note:** the Android kernel source header `aw9523_key.h` documents P0 as "KROW output" and
+P1 as "KCOL input", which appears to describe the logical scan direction from the perspective
+of the matrix (row = the thing being selected) rather than the electrical direction (P0 pins
+are physically the inputs).  The electrical reality — confirmed by reading the `aw9523_key.c`
+scan loop — is P0 inputs / P1 outputs.
 
 ### Register map (AW9523B)
 
@@ -88,12 +113,20 @@ The driver scans by driving each column low in turn on P0 and reading the row st
 
 ### Interrupt / scan strategy
 
-1. On init, configure P0 as all-low output (columns driven), P1 as input, enable P0 interrupts.
+Android driver (reference):
+
+1. On init, configure P1 as output (column drive), P0 as input (row sense), enable P0 interrupts.
 2. Wait for any key press with a level interrupt on the AW9523B INT pin.
 3. On interrupt: disable the interrupt, start an hrtimer.
-4. On each hrtimer tick: scan each column, read P1 rows, decode key state from `key_map[]`.
+4. On each hrtimer tick: scan each column (drive P1[c] LOW), read P0 rows, decode key state.
 5. Report press/release events to the input subsystem.
 6. When no keys remain pressed, re-enable the interrupt and stop the timer.
+
+Out-of-tree driver (this module):
+
+Uses a 10 ms `delayed_work` polling loop instead of interrupt-driven wakeup, because the
+AW9523B INT and SHDN GPIOs are not described in the Gemian device tree.  Interrupt-driven
+support can be added once proper DT bindings are in place.
 
 Scan interval:
 - Gemini / Cosmo: adaptive — 1 ms while keys are active, 10 ms when settling

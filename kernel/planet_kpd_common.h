@@ -19,7 +19,7 @@
 
 #define AW9523_CHIP_ID          0x23
 
-/* Matrix: P0[7:0] = rows (outputs), P1[6:0] = columns (inputs), P1[7] unused */
+/* Matrix: P0[7:0] = rows (inputs, sense), P1[6:0] = columns (outputs, drive), P1[7] unused */
 #define AW9523_NUM_ROWS         8
 #define AW9523_NUM_COLS         7
 

@@ -9,14 +9,24 @@
  *   P1[6:0] = column drive outputs (driven LOW one at a time during scan)
  *   P1[7]   = unused
  *
- * This driver uses a 10 ms polling loop (delayed_work) so that it does
- * not require the INT GPIO to be described in the device tree.  Interrupt-
- * driven wakeup can be added once proper DT bindings are in place.
+ * Two scan modes, selected at module load via the int_gpio parameter:
+ *
+ *   Interrupt mode (int_gpio >= 0):
+ *     The AW9523B INT pin asserts LOW on any key state change.  The driver
+ *     disables the IRQ, debounces for DEBOUNCE_MS, scans the matrix, and
+ *     continues scanning every SCAN_PERIOD_MS while any key is held.  When
+ *     all keys are released it re-enables the IRQ and waits.
+ *
+ *   Polling mode (int_gpio < 0, default):
+ *     A delayed_work fires every SCAN_PERIOD_MS unconditionally.  Does not
+ *     require the INT GPIO to be described in the device tree.
  */
 
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
+#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/slab.h>
@@ -26,6 +36,19 @@
 
 #define MODULE_NAME    "planet_kpd"
 #define SCAN_PERIOD_MS 10
+#define DEBOUNCE_MS    5
+
+static int int_gpio = -1;
+module_param(int_gpio, int, 0444);
+MODULE_PARM_DESC(int_gpio,
+	"AW9523B INT GPIO number.  -1 (default) = use int_irq or polling.");
+
+static int int_irq = -1;
+module_param(int_irq, int, 0444);
+MODULE_PARM_DESC(int_irq,
+	"AW9523B IRQ number (overrides int_gpio).  -1 (default) = use int_gpio or polling.\n"
+	"On Cosmo: the MTK EINT controller owns GPIO 12 so devm_gpio_request fails;\n"
+	"pass int_irq=31 to use the aw9523-eint IRQ directly.");
 
 /*
  * Key map indexed [row][col] → Linux keycode.
@@ -50,6 +73,7 @@ struct planet_kpd_dev {
 	struct input_dev   *input;
 	struct delayed_work work;
 	u8                  prev_state[AW9523_NUM_COLS];
+	int                 irq;	/* >=0: interrupt mode; -1: polling */
 };
 
 static int planet_kpd_chip_init(struct i2c_client *client)
@@ -78,12 +102,12 @@ static int planet_kpd_chip_init(struct i2c_client *client)
 	if (ret < 0)
 		return ret;
 
-	/* All P1 lines HIGH (open-drain Hi-Z) — no column selected, matrix at rest */
+	/* All P1 lines Hi-Z — no column selected, matrix at rest */
 	ret = i2c_smbus_write_byte_data(client, AW9523_REG_P1_OUTPUT, 0xFF);
 	if (ret < 0)
 		return ret;
 
-	/* Disable all interrupts — polling mode */
+	/* Disable all interrupts; interrupt mode enables P0 after GPIO setup */
 	ret = i2c_smbus_write_byte_data(client, AW9523_REG_P0_INT, 0xFF);
 	if (ret < 0)
 		return ret;
@@ -146,9 +170,38 @@ static void planet_kpd_work_fn(struct work_struct *work)
 {
 	struct planet_kpd_dev *kpd =
 		container_of(work, struct planet_kpd_dev, work.work);
+	int col;
 
 	planet_kpd_scan(kpd);
-	schedule_delayed_work(&kpd->work, msecs_to_jiffies(SCAN_PERIOD_MS));
+
+	if (kpd->irq >= 0) {
+		/*
+		 * Interrupt mode: keep scanning while any key is held so we
+		 * catch releases.  When the matrix is clear, re-arm the IRQ.
+		 * Reading P0_INPUT during the scan clears the AW9523B interrupt
+		 * latch, so re-enabling the IRQ here is safe.
+		 */
+		for (col = 0; col < AW9523_NUM_COLS; col++) {
+			if (kpd->prev_state[col]) {
+				schedule_delayed_work(&kpd->work,
+						      msecs_to_jiffies(SCAN_PERIOD_MS));
+				return;
+			}
+		}
+		enable_irq(kpd->irq);
+	} else {
+		/* Polling mode: reschedule unconditionally */
+		schedule_delayed_work(&kpd->work, msecs_to_jiffies(SCAN_PERIOD_MS));
+	}
+}
+
+static irqreturn_t planet_kpd_irq_handler(int irq, void *dev_id)
+{
+	struct planet_kpd_dev *kpd = dev_id;
+
+	disable_irq_nosync(irq);
+	schedule_delayed_work(&kpd->work, msecs_to_jiffies(DEBOUNCE_MS));
+	return IRQ_HANDLED;
 }
 
 static int planet_kpd_probe(struct i2c_client *client,
@@ -173,6 +226,7 @@ static int planet_kpd_probe(struct i2c_client *client,
 		return -ENOMEM;
 
 	kpd->client = client;
+	kpd->irq    = -1;
 	i2c_set_clientdata(client, kpd);
 
 	ret = planet_kpd_chip_init(client);
@@ -204,9 +258,85 @@ static int planet_kpd_probe(struct i2c_client *client,
 	}
 
 	INIT_DELAYED_WORK(&kpd->work, planet_kpd_work_fn);
-	schedule_delayed_work(&kpd->work, msecs_to_jiffies(SCAN_PERIOD_MS));
 
-	dev_info(&client->dev, "AW9523B keyboard ready (chip ID 0x%02x)\n", chip_id);
+	if (int_irq >= 0) {
+		/*
+		 * Direct IRQ mode: the MTK EINT controller owns the GPIO pin so
+		 * devm_gpio_request fails with -EPROBE_DEFER on Cosmo.  The EINT
+		 * is already configured by the DT; we just attach our handler.
+		 */
+		/*
+		 * On Cosmo (4.4 kernel) the built-in aw9523_key driver claims
+		 * this IRQ at init time (flags=0, no IRQF_SHARED) even when its
+		 * I2C probe is inactive, so request_irq returns -EBUSY here.
+		 * Interrupt mode works on kernels with proper DT interrupt
+		 * bindings (e.g. Astro 5.4+).
+		 */
+		ret = devm_request_irq(&client->dev, int_irq,
+				       planet_kpd_irq_handler,
+				       IRQF_TRIGGER_FALLING,
+				       MODULE_NAME, kpd);
+		if (ret) {
+			dev_warn(&client->dev,
+				 "cannot request IRQ %d (%d) — IRQ already claimed; falling back to polling\n",
+				 int_irq, ret);
+			goto polling;
+		}
+
+		/* Enable P0 change interrupts on the chip */
+		i2c_smbus_write_byte_data(client, AW9523_REG_P0_INT, 0x00);
+
+		kpd->irq = int_irq;
+		dev_info(&client->dev,
+			 "AW9523B keyboard ready (interrupt mode, IRQ %d)\n",
+			 int_irq);
+		return 0;
+	}
+
+	if (int_gpio >= 0) {
+		int gpio_irq;
+
+		ret = devm_gpio_request_one(&client->dev, int_gpio,
+					    GPIOF_IN, MODULE_NAME);
+		if (ret) {
+			dev_warn(&client->dev,
+				 "cannot claim INT GPIO %d (%d), falling back to polling\n",
+				 int_gpio, ret);
+			goto polling;
+		}
+
+		gpio_irq = gpio_to_irq(int_gpio);
+		if (gpio_irq < 0) {
+			dev_warn(&client->dev,
+				 "cannot map INT GPIO %d to IRQ, falling back to polling\n",
+				 int_gpio);
+			goto polling;
+		}
+
+		ret = devm_request_irq(&client->dev, gpio_irq,
+				       planet_kpd_irq_handler,
+				       IRQF_TRIGGER_FALLING,
+				       MODULE_NAME, kpd);
+		if (ret) {
+			dev_warn(&client->dev,
+				 "cannot request IRQ %d (%d), falling back to polling\n",
+				 gpio_irq, ret);
+			goto polling;
+		}
+
+		/* Enable P0 change interrupts on the chip now the GPIO is wired */
+		i2c_smbus_write_byte_data(client, AW9523_REG_P0_INT, 0x00);
+
+		kpd->irq = gpio_irq;
+		dev_info(&client->dev,
+			 "AW9523B keyboard ready (interrupt mode, GPIO %d / IRQ %d)\n",
+			 int_gpio, gpio_irq);
+		return 0;
+	}
+
+polling:
+	schedule_delayed_work(&kpd->work, msecs_to_jiffies(SCAN_PERIOD_MS));
+	dev_info(&client->dev, "AW9523B keyboard ready (polling mode)\n");
 	return 0;
 }
 
@@ -214,6 +344,12 @@ static int planet_kpd_remove(struct i2c_client *client)
 {
 	struct planet_kpd_dev *kpd = i2c_get_clientdata(client);
 
+	/*
+	 * Disable the IRQ before cancelling work so the handler cannot
+	 * reschedule after cancel_delayed_work_sync returns.
+	 */
+	if (kpd->irq >= 0)
+		disable_irq(kpd->irq);
 	cancel_delayed_work_sync(&kpd->work);
 	return 0;
 }
